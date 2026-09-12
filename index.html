@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>隨機單字朗讀器 (全域雷達鎖定版)</title>
+  <title>隨機單字朗讀器 (KK音標錨點版)</title>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto; }
@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <h2>單字抽考 (AI 全域雷達鎖定版)</h2>
+  <h2>單字抽考 (AI KK音標錨點版)</h2>
   
   <div class="settings">
     <div class="setting-group">
@@ -84,7 +84,7 @@
       const uploadBtn = document.getElementById('uploadBtn');
       const originalText = uploadBtn.innerText;
       
-      uploadBtn.innerText = '⏳ 辨識與精準鎖定中...';
+      uploadBtn.innerText = '⏳ 辨識與音標錨點鎖定中...';
       uploadBtn.disabled = true;
 
       const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
@@ -97,10 +97,10 @@
         let extracted = [];
 
         if (ocrLang === 'eng') {
-          // 【核心修正】全域雷達掃描 (不再限制行首)
-          // 只要全文中出現「數字 + 點 + 英文單字」的組合，就直接抓出來
-          // 例如不管前面有什麼雜訊，只要看到 "1. baby" 就能成功抓取 "baby"
-          const regex = /(?:^|\s)\d{1,3}\s*[\.\,]\s*([a-zA-Z\-]{2,})/g;
+          // 【核心修正】以 KK 音標的左中括號為錨點
+          // 尋找「英文單字 + 空白 + 左中括號/左小括號」
+          // 例如 "baby ['bebi]" 會精準抓出 "baby"
+          const regex = /\b([a-zA-Z\-]{2,})\s*[\[\(]/g;
           let match;
           
           while ((match = regex.exec(text)) !== null) {
@@ -108,8 +108,7 @@
             extracted.push(w);
           }
           
-          // 黑名單過濾
-          const stopWords = ['the','and','are','was','were','that','this','with','from','some','there','who','what','when','where','how','why','not','out','for','but','alice','tom','joe','nancy','tina'];
+          const stopWords = ['the','and','are','was','were','that','this','with','from','some','there','who','what','when','where','how','why','not','out','for','but'];
           extracted = extracted.filter(w => !stopWords.includes(w));
 
         } else {
@@ -118,7 +117,7 @@
         }
 
         if (extracted.length === 0) {
-          alert('⚠️ 找不到帶有數字標號的單字！請確認照片中有拍到「數字編號 (如 1. baby)」。');
+          alert('⚠️ 找不到單字！請確認照片中有拍到「單字 + [KK音標]」的格式。');
           return;
         }
 
