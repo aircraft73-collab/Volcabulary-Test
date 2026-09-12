@@ -2,8 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>隨機單字朗讀器 (AI 圖片辨識版)</title>
-  <!-- 引入 Tesseract.js 圖片文字辨識引擎 -->
+  <title>隨機單字朗讀器 (AI 圖片精準辨識版)</title>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto; }
@@ -25,7 +24,7 @@
   </style>
 </head>
 <body>
-  <h2>單字抽考 (AI 相片辨識不重複版)</h2>
+  <h2>單字抽考 (AI 相片精準辨識版)</h2>
   
   <div class="settings">
     <div class="setting-group">
@@ -43,7 +42,6 @@
       </div>
     </div>
     
-    <!-- 圖片上傳區塊 -->
     <div>
       <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="processImage(event)">
       <button id="uploadBtn" class="btn-upload" onclick="document.getElementById('imageInput').click()">📸 拍課本/上傳相片擷取單字</button>
@@ -79,7 +77,6 @@
     let historyIndex = -1; 
     let isPaused = false;
 
-    // --- 相片 OCR 辨識與亂數處理邏輯 ---
     async function processImage(event) {
       const file = event.target.files[0];
       if (!file) return;
@@ -87,11 +84,9 @@
       const uploadBtn = document.getElementById('uploadBtn');
       const originalText = uploadBtn.innerText;
       
-      // 顯示讀取中，第一次執行會動態下載字庫，需要幾秒鐘
-      uploadBtn.innerText = '⏳ 辨識中 (首次需下載 AI 字庫請稍候)...';
+      uploadBtn.innerText = '⏳ 辨識中 (請稍候)...';
       uploadBtn.disabled = true;
 
-      // 根據目前下拉選單決定要讓 AI 辨識哪種語言
       const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
       const selectedLang = document.getElementById('langSelect').value;
       const ocrLang = langMap[selectedLang] || 'eng';
@@ -102,34 +97,39 @@
         let words = [];
 
         if (ocrLang === 'eng') {
-          // 如果是英文模式，聰明地只抓取英文字母(包含連字號)，自動濾除課本旁的中文翻譯
-          words = text.match(/[a-zA-Z\-]+/g) || [];
+          // 針對課本格式優化：尋找「數字 + 點 + 單字」 (例如 7. guest)
+          const regex = /\b\d+\.\s*([a-zA-Z\-]+)/g;
+          let match;
+          while ((match = regex.exec(text)) !== null) {
+            words.push(match[1].toLowerCase());
+          }
+
+          // 備用機制：如果圖片裡沒有數字標號(例如只拍了手寫區)，則抓取大於 2 個字母的單字
+          if (words.length === 0) {
+            const allWords = text.match(/[a-zA-Z\-]+/g) || [];
+            words = allWords.filter(w => w.length > 2);
+          }
         } else {
-          // 中文或日文則利用空格或換行來切割
           words = text.split(/[\n\s,、。]+/).map(w => w.trim());
+          words = words.filter(w => w !== '' && w.length > 1);
         }
 
-        // 過濾掉空白，以及長度只有1的雜訊(英文模式下)
-        words = words.filter(w => w !== '' && (ocrLang !== 'eng' || w.length > 1));
-
         if (words.length === 0) {
-          alert('⚠️ 找不到單字！請確認圖片是否清晰，或是語言設定是否正確。');
+          alert('⚠️ 找不到單字！請確認圖片是否清晰，或試著將鏡頭靠近單字列表。');
           return;
         }
 
-        // 亂數排序 (Fisher-Yates 洗牌演算法)
         for (let i = words.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [words[i], words[j]] = [words[j], words[i]];
         }
 
-        // 附加到現有的未考清單中並去除重複
         const pendingListDOM = document.getElementById('pendingList');
         let currentWords = pendingListDOM.value.split('\n').map(w => w.trim()).filter(w => w !== '');
         let combinedWords = [...new Set([...currentWords, ...words])];
         
         pendingListDOM.value = combinedWords.join('\n');
-        alert(`✅ 成功辨識 ${words.length} 個單字！已自動亂數排序並加入未考區。`);
+        alert(`✅ 成功萃取 ${words.length} 個課本單字！`);
         
       } catch (err) {
         console.error(err);
@@ -137,11 +137,10 @@
       } finally {
         uploadBtn.innerText = originalText;
         uploadBtn.disabled = false;
-        event.target.value = ''; // 允許重複上傳相同檔案
+        event.target.value = ''; 
       }
     }
 
-    // --- 測驗控制邏輯 ---
     function getIntervalMs() {
       let sec = parseInt(document.getElementById('interval').value, 10);
       return (isNaN(sec) || sec <= 0) ? 30000 : sec * 1000;
@@ -185,7 +184,6 @@
         return;
       }
       
-      // 注意：單字已經在辨識時打亂過，這裡再隨機抽一次雙重保障
       const randomIndex = Math.floor(Math.random() * pendingWords.length);
       const word = pendingWords.splice(randomIndex, 1)[0];
       
