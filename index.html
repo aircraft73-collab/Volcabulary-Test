@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>隨機單字朗讀器 (AI 圖片辨識版)</title>
+  <!-- 引入 Tesseract.js 圖片文字辨識引擎 -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto; }
+    .container { display: flex; gap: 20px; margin-bottom: 15px; }
+    .box { flex: 1; display: flex; flex-direction: column; }
+    textarea { width: 100%; font-size: 16px; padding: 10px; box-sizing: border-box; resize: vertical; }
+    .settings { margin-bottom: 15px; font-size: 16px; background-color: #f0f8ff; padding: 15px; border-radius: 5px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between;}
+    .setting-group { display: flex; gap: 20px; align-items: center; }
+    .settings input, .settings select { font-size: 16px; padding: 5px; }
+    .settings input[type="number"] { width: 60px; text-align: center; }
+    .btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+    button { padding: 10px 15px; font-size: 16px; cursor: pointer; border-radius: 5px; border: 1px solid #ccc; background-color: #f9f9f9; }
+    button:hover { background-color: #e9e9e9; }
+    .btn-primary { background-color: #d4edda; border-color: #c3e6cb; }
+    .btn-upload { background-color: #cce5ff; border-color: #b8daff; font-weight: bold; }
+    .btn-upload:hover { background-color: #b8daff; }
+    #status { font-size: 24px; font-weight: bold; color: #d9534f; margin-bottom: 10px; }
+    label { font-weight: bold; margin-bottom: 5px; color: #333; }
+  </style>
+</head>
+<body>
+  <h2>單字抽考 (AI 相片辨識不重複版)</h2>
+  
+  <div class="settings">
+    <div class="setting-group">
+      <div>
+        <label for="langSelect">🗣️ 朗讀語言：</label>
+        <select id="langSelect">
+          <option value="en-US">英文 (English)</option>
+          <option value="zh-TW">中文 (台灣)</option>
+          <option value="ja-JP">日文 (日本語)</option>
+        </select>
+      </div>
+      <div>
+        <label for="interval">⏱️ 每個單字作答：</label>
+        <input type="number" id="interval" value="30" min="1"> 秒
+      </div>
+    </div>
+    
+    <!-- 圖片上傳區塊 -->
+    <div>
+      <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="processImage(event)">
+      <button id="uploadBtn" class="btn-upload" onclick="document.getElementById('imageInput').click()">📸 拍課本/上傳相片擷取單字</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="box">
+      <label>📝 未考詞彙 (可手動修改)：</label>
+      <textarea id="pendingList" rows="10" placeholder="貼上單字，或是點擊上方「上傳相片」自動擷取..."></textarea>
+    </div>
+    <div class="box">
+      <label>✅ 已考詞彙 (歷史記錄)：</label>
+      <textarea id="testedList" rows="10" readonly style="background-color: #f8f9fa;"></textarea>
+    </div>
+  </div>
+  
+  <div class="btn-group">
+    <button onclick="startReading()" class="btn-primary">▶ 開始測驗</button>
+    <button onclick="togglePause()" id="pauseBtn">⏸ 暫停</button>
+    <button onclick="prevWord()">⏮ 上一個</button>
+    <button onclick="repeatWord()">🔁 重讀目前詞彙</button>
+    <button onclick="nextWordManual()">⏭ 提早換下一個</button>
+    <button onclick="stopReading()" style="background-color: #f8d7da; border-color: #f5c6cb;">⏹ 停止</button>
+  </div>
+  
+  <div id="status">目前詞彙：<span id="currentWord">尚未開始</span></div>
+
+  <script>
+    let timer;
+    let pendingWords = [];
+    let testedWords = [];
+    let historyIndex = -1; 
+    let isPaused = false;
+
+    // --- 相片 OCR 辨識與亂數處理邏輯 ---
+    async function processImage(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const uploadBtn = document.getElementById('uploadBtn');
+      const originalText = uploadBtn.innerText;
+      
+      // 顯示讀取中，第一次執行會動態下載字庫，需要幾秒鐘
+      uploadBtn.innerText = '⏳ 辨識中 (首次需下載 AI 字庫請稍候)...';
+      uploadBtn.disabled = true;
+
+      // 根據目前下拉選單決定要讓 AI 辨識哪種語言
+      const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
+      const selectedLang = document.getElementById('langSelect').value;
+      const ocrLang = langMap[selectedLang] || 'eng';
+
+      try {
+        const result = await Tesseract.recognize(file, ocrLang);
+        let text = result.data.text;
+        let words = [];
+
+        if (ocrLang === 'eng') {
+          // 如果是英文模式，聰明地只抓取英文字母(包含連字號)，自動濾除課本旁的中文翻譯
+          words = text.match(/[a-zA-Z\-]+/g) || [];
+        } else {
+          // 中文或日文則利用空格或換行來切割
+          words = text.split(/[\n\s,、。]+/).map(w => w.trim());
+        }
+
+        // 過濾掉空白，以及長度只有1的雜訊(英文模式下)
+        words = words.filter(w => w !== '' && (ocrLang !== 'eng' || w.length > 1));
+
+        if (words.length === 0) {
+          alert('⚠️ 找不到單字！請確認圖片是否清晰，或是語言設定是否正確。');
+          return;
+        }
+
+        // 亂數排序 (Fisher-Yates 洗牌演算法)
+        for (let i = words.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [words[i], words[j]] = [words[j], words[i]];
+        }
+
+        // 附加到現有的未考清單中並去除重複
+        const pendingListDOM = document.getElementById('pendingList');
+        let currentWords = pendingListDOM.value.split('\n').map(w => w.trim()).filter(w => w !== '');
+        let combinedWords = [...new Set([...currentWords, ...words])];
+        
+        pendingListDOM.value = combinedWords.join('\n');
+        alert(`✅ 成功辨識 ${words.length} 個單字！已自動亂數排序並加入未考區。`);
+        
+      } catch (err) {
+        console.error(err);
+        alert('❌ 圖片辨識失敗，請確認網路連線是否正常。');
+      } finally {
+        uploadBtn.innerText = originalText;
+        uploadBtn.disabled = false;
+        event.target.value = ''; // 允許重複上傳相同檔案
+      }
+    }
+
+    // --- 測驗控制邏輯 ---
+    function getIntervalMs() {
+      let sec = parseInt(document.getElementById('interval').value, 10);
+      return (isNaN(sec) || sec <= 0) ? 30000 : sec * 1000;
+    }
+
+    function updateTextareas() {
+      document.getElementById('pendingList').value = pendingWords.join('\n');
+      document.getElementById('testedList').value = testedWords.join('\n');
+    }
+
+    function startReading() {
+      const text = document.getElementById('pendingList').value;
+      pendingWords = [...new Set(text.split('\n').map(w => w.trim()).filter(w => w !== ''))];
+      
+      if (pendingWords.length === 0) {
+        alert('請先在「未考詞彙」區輸入單字，或是拍照上傳！');
+        return;
+      }
+      
+      testedWords = [];
+      historyIndex = -1;
+      isPaused = false;
+      document.getElementById('pauseBtn').innerText = '⏸ 暫停';
+      
+      updateTextareas();
+      stopReading(false); 
+      drawNextWord();
+    }
+
+    function drawNextWord() {
+      if (historyIndex < testedWords.length - 1) {
+        historyIndex++;
+        speakCurrentWord();
+        return;
+      }
+
+      if (pendingWords.length === 0) {
+        document.getElementById('currentWord').innerText = '🎉 測驗完成！';
+        document.getElementById('currentWord').style.color = 'green';
+        clearTimeout(timer);
+        return;
+      }
+      
+      // 注意：單字已經在辨識時打亂過，這裡再隨機抽一次雙重保障
+      const randomIndex = Math.floor(Math.random() * pendingWords.length);
+      const word = pendingWords.splice(randomIndex, 1)[0];
+      
+      testedWords.push(word);
+      historyIndex = testedWords.length - 1;
+      
+      updateTextareas();
+      speakCurrentWord();
+    }
+
+    function speakCurrentWord() {
+      clearTimeout(timer);
+      window.speechSynthesis.cancel();
+      
+      if (historyIndex < 0 || historyIndex >= testedWords.length) return;
+      
+      const word = testedWords[historyIndex];
+      document.getElementById('currentWord').innerText = word;
+      document.getElementById('currentWord').style.color = '#d9534f';
+
+      const utterance = new SpeechSynthesisUtterance(word);
+      utterance.lang = document.getElementById('langSelect').value; 
+      window.speechSynthesis.speak(utterance);
+
+      if (!isPaused) {
+        timer = setTimeout(drawNextWord, getIntervalMs());
+      }
+    }
+
+    function togglePause() {
+      if (testedWords.length === 0) return; 
+      isPaused = !isPaused;
+      const pauseBtn = document.getElementById('pauseBtn');
+      if (isPaused) {
+        clearTimeout(timer);
+        pauseBtn.innerText = '▶ 繼續';
+        document.getElementById('currentWord').innerText += ' (已暫停)';
+      } else {
+        pauseBtn.innerText = '⏸ 暫停';
+        speakCurrentWord(); 
+      }
+    }
+
+    function prevWord() {
+      if (historyIndex > 0) {
+        historyIndex--;
+        speakCurrentWord();
+      } else {
+        alert('已經是第一個了！');
+      }
+    }
+
+    function repeatWord() { if (historyIndex >= 0) speakCurrentWord(); }
+    
+    function nextWordManual() { if (testedWords.length > 0) drawNextWord(); }
+
+    function stopReading(resetUI = true) {
+      clearTimeout(timer);
+      window.speechSynthesis.cancel();
+      if (resetUI) {
+        document.getElementById('currentWord').innerText = '已停止';
+        document.getElementById('currentWord').style.color = 'black';
+        isPaused = false;
+        document.getElementById('pauseBtn').innerText = '⏸ 暫停';
+      }
+    }
+  </script>
+</body>
+</html>
