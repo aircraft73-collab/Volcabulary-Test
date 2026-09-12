@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>隨機單字朗讀器 (AI 演算法優化版)</title>
+  <title>隨機單字朗讀器 (雜訊強制過濾版)</title>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto; }
@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <h2>單字抽考 (AI 相片精準辨識版)</h2>
+  <h2>單字抽考 (AI 雜訊強制過濾版)</h2>
   
   <div class="settings">
     <div class="setting-group">
@@ -84,7 +84,7 @@
       const uploadBtn = document.getElementById('uploadBtn');
       const originalText = uploadBtn.innerText;
       
-      uploadBtn.innerText = '⏳ 辨識與演算法過濾中...';
+      uploadBtn.innerText = '⏳ 辨識與雜訊濾除中...';
       uploadBtn.disabled = true;
 
       const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
@@ -98,28 +98,35 @@
 
         if (ocrLang === 'eng') {
           const lines = text.split('\n');
+          let numberedWords = [];
+          let fallbackWords = [];
           
           for (let line of lines) {
-            // 策略 1: 尋找明確有數字標號的單字 (如 "7. guest" 或 "7 guest")
-            const numMatch = line.match(/\d+[\.\,\s]+([a-zA-Z\-]{3,})/);
+            // 策略 1: 嚴格比對「數字 + 標點/空白 + 單字」
+            const numMatch = line.match(/(?:^|\b)\d+[\.\,\s]+([a-zA-Z\-]{2,})/);
             if (numMatch) {
               let w = numMatch[1].toLowerCase();
-              if (w !== w.toUpperCase()) extracted.push(w);
-              continue; 
-            }
-
-            // 策略 2: 如果沒有數字，檢查該行的單字數量 (排除長例句)
-            const engWords = line.match(/[a-zA-Z\-]{3,}/g);
-            if (engWords && engWords.length > 0 && engWords.length <= 3) {
-              let firstWord = engWords[0];
-              // 排除全大寫的 OCR 雜訊 (如 EE, HE)
-              if (firstWord !== firstWord.toUpperCase()) {
-                  extracted.push(firstWord.toLowerCase());
+              if (w !== w.toUpperCase()) numberedWords.push(w);
+            } else {
+              // 策略 2: 備用收集 (只在整頁都沒有數字時才啟用)
+              const engWords = line.match(/[a-zA-Z\-]{3,}/g);
+              if (engWords && engWords.length > 0 && engWords.length <= 2) {
+                 let firstWord = engWords[0];
+                 if (firstWord !== firstWord.toUpperCase()) {
+                     fallbackWords.push(firstWord.toLowerCase());
+                 }
               }
             }
           }
           
-          // 終極黑名單過濾：排除常見文法字與殘留的人名
+          // 關鍵防護：只要抓到任何帶數字標號的有效單字，直接捨棄備用清單中的中文幻覺雜訊
+          if (numberedWords.length > 0) {
+            extracted = numberedWords;
+          } else {
+            extracted = fallbackWords;
+          }
+          
+          // 終極黑名單：排除常見文法字與殘留的人名
           const stopWords = ['the','and','are','was','were','that','this','with','from','some','there','who','what','when','where','how','why','not','out','for','but','alice','tom','joe','nancy','tina'];
           extracted = extracted.filter(w => !stopWords.includes(w));
 
@@ -129,11 +136,10 @@
         }
 
         if (extracted.length === 0) {
-          alert('⚠️ 找不到符合條件的單字！請試著將鏡頭靠近一點。');
+          alert('⚠️ 找不到符合條件的單字！請確認圖片是否清晰。');
           return;
         }
 
-        // 亂數洗牌
         for (let i = extracted.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [extracted[i], extracted[j]] = [extracted[j], extracted[i]];
@@ -144,7 +150,7 @@
         let combinedWords = [...new Set([...currentWords, ...extracted])];
         
         pendingListDOM.value = combinedWords.join('\n');
-        alert(`✅ 成功萃取 ${extracted.length} 個單字，已自動過濾雜訊與例句！`);
+        alert(`✅ 成功萃取 ${extracted.length} 個單字，已徹底過濾雜訊！`);
         
       } catch (err) {
         console.error(err);
