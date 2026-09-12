@@ -150,22 +150,50 @@
       if (!file) return;
       cropOriginalFile = file;
 
+      const uploadBtn = document.getElementById('uploadBtn');
+      const originalText = uploadBtn.innerText;
+      // 選好照片的當下就先給視覺回饋，讓使用者知道已經有反應了
+      uploadBtn.innerText = '⏳ 讀取照片中...';
+      uploadBtn.disabled = true;
+
+      let settled = false;
+      const restoreBtn = () => {
+        uploadBtn.innerText = originalText;
+        uploadBtn.disabled = false;
+      };
+
+      // 保底機制：無論圖片載入過程卡在哪一步、甚至完全沒觸發 onload/onerror，
+      // 5 秒後都會自動改用整張照片直接辨識，不會讓畫面停在「沒反應」的狀態
+      const fallbackTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.warn('框選畫面逾時未開啟，改用整張照片直接辨識');
+        restoreBtn();
+        runOcrPipeline(cropOriginalFile);
+      }, 5000);
+
       const img = new Image();
       img.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
         try {
           cropImgObj = img;
           setupCropCanvas();
+          restoreBtn();
           document.getElementById('cropModal').style.display = 'flex';
         } catch (err) {
-          // 裁切畫面初始化失敗時，不要靜默沒反應，改成直接用整張照片辨識
           console.error('裁切畫面初始化失敗：', err);
-          alert('⚠️ 框選畫面開啟失敗，將直接用整張照片辨識。');
+          restoreBtn();
           runOcrPipeline(cropOriginalFile);
         }
       };
       img.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
         console.error('圖片預覽載入失敗');
-        alert('⚠️ 圖片預覽失敗，將直接用整張照片辨識。');
+        restoreBtn();
         runOcrPipeline(cropOriginalFile);
       };
       img.src = URL.createObjectURL(file);
