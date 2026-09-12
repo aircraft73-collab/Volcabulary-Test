@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
-  <title>隨機單字朗讀器 (極限嚴格過濾版)</title>
+  <title>隨機單字朗讀器 (全域雷達鎖定版)</title>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; max-width: 800px; margin: auto; }
@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <h2>單字抽考 (AI 極限嚴格過濾版)</h2>
+  <h2>單字抽考 (AI 全域雷達鎖定版)</h2>
   
   <div class="settings">
     <div class="setting-group">
@@ -84,7 +84,7 @@
       const uploadBtn = document.getElementById('uploadBtn');
       const originalText = uploadBtn.innerText;
       
-      uploadBtn.innerText = '⏳ 辨識與嚴格過濾中...';
+      uploadBtn.innerText = '⏳ 辨識與精準鎖定中...';
       uploadBtn.disabled = true;
 
       const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
@@ -97,22 +97,18 @@
         let extracted = [];
 
         if (ocrLang === 'eng') {
-          const lines = text.split('\n');
+          // 【核心修正】全域雷達掃描 (不再限制行首)
+          // 只要全文中出現「數字 + 點 + 英文單字」的組合，就直接抓出來
+          // 例如不管前面有什麼雜訊，只要看到 "1. baby" 就能成功抓取 "baby"
+          const regex = /(?:^|\s)\d{1,3}\s*[\.\,]\s*([a-zA-Z\-]{2,})/g;
+          let match;
           
-          for (let line of lines) {
-            line = line.trim();
-            // 【核心修正】極度嚴格比對：
-            // 允許開頭有零星雜訊符號 -> 接著必須是 1~3 位數的數字 -> 加上點或空白 -> 最後才是 2 個字母以上的單字
-            // 完全命中這個格式 (例如 "7. guest" 或 "| 12 male") 才放行
-            const numMatch = line.match(/^[^a-zA-Z0-9]*\d{1,3}[\.\s]+([a-zA-Z\-]{2,})/);
-            
-            if (numMatch) {
-              let w = numMatch[1].toLowerCase();
-              extracted.push(w);
-            }
+          while ((match = regex.exec(text)) !== null) {
+            let w = match[1].toLowerCase();
+            extracted.push(w);
           }
           
-          // 排除可能誤判的常見文法字與人名
+          // 黑名單過濾
           const stopWords = ['the','and','are','was','were','that','this','with','from','some','there','who','what','when','where','how','why','not','out','for','but','alice','tom','joe','nancy','tina'];
           extracted = extracted.filter(w => !stopWords.includes(w));
 
@@ -122,7 +118,7 @@
         }
 
         if (extracted.length === 0) {
-          alert('⚠️ 找不到帶有數字標號的單字！請確認照片中有拍到「數字編號 (如 7.)」。');
+          alert('⚠️ 找不到帶有數字標號的單字！請確認照片中有拍到「數字編號 (如 1. baby)」。');
           return;
         }
 
@@ -136,7 +132,7 @@
         let combinedWords = [...new Set([...currentWords, ...extracted])];
         
         pendingListDOM.value = combinedWords.join('\n');
-        alert(`✅ 成功萃取 ${extracted.length} 個單字，幻覺雜訊已完全捨棄！`);
+        alert(`✅ 成功鎖定並萃取 ${extracted.length} 個單字！`);
         
       } catch (err) {
         console.error(err);
