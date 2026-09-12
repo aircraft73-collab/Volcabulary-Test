@@ -43,10 +43,19 @@
     </div>
     
     <div>
-      <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="processImage(event)">
+      <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="handleFileSelect(event)">
       <button id="uploadBtn" class="btn-upload" onclick="document.getElementById('imageInput').click()">📸 拍課本擷取單字</button>
     </div>
   </div>
+
+  <div style="font-size:13px; color:#666; margin:-10px 0 15px;">
+    💡 拍照小技巧：把書頁壓平、正對鏡頭拍攝、避免反光與陰影、單字盡量佔滿畫面，辨識率會更高。
+  </div>
+
+  <details id="debugDetails" style="margin-bottom:15px; display:none;">
+    <summary style="cursor:pointer; color:#555;">🔍 顯示 OCR 原始辨識文字（除錯用，可比對哪裡辨識錯誤）</summary>
+    <textarea id="debugText" rows="6" readonly style="width:100%; font-size:12px; background:#f8f9fa; margin-top:8px; box-sizing:border-box;"></textarea>
+  </details>
 
   <div class="container">
     <div class="box">
@@ -70,6 +79,21 @@
   
   <div id="status">目前詞彙：<span id="currentWord">尚未開始</span></div>
 
+  <div id="cropModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:1000; flex-direction:column; align-items:center; justify-content:center;">
+    <div style="color:#fff; margin-bottom:10px; font-size:15px; text-align:center; padding:0 15px;">
+      📐 請用手指拖曳框選「只有單字＋音標」的那一欄，再按確認<br>
+      <span style="font-size:12px; color:#ccc;">（框選範圍越乾淨、不含右邊例句，辨識率越高）</span>
+    </div>
+    <div style="position:relative; touch-action:none;">
+      <canvas id="cropCanvas" style="touch-action:none; background:#222; display:block;"></canvas>
+    </div>
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center;">
+      <button onclick="confirmCrop()" class="btn-primary">✅ 確認框選範圍</button>
+      <button onclick="useFullImage()">🖼 使用整張照片</button>
+      <button onclick="cancelCrop()" style="background-color:#f8d7da; border-color:#f5c6cb;">✖ 取消</button>
+    </div>
+  </div>
+
   <script>
     let timer;
     let pendingWords = [];
@@ -77,14 +101,191 @@
     let historyIndex = -1; 
     let isPaused = false;
 
-    async function processImage(event) {
+    // 圖片前處理：灰階化 + 提高對比 + 放大，讓 OCR 更容易辨識課本上較小或較模糊的印刷字
+    function preprocessImage(file) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = 2; // 放大兩倍，提升辨識解析度
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          try {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            const contrast = 45; // -255 ~ 255，數字越大對比越強
+            const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+            for (let i = 0; i < data.length; i += 4) {
+              let gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+              gray = factor * (gray - 128) + 128;
+              gray = Math.max(0, Math.min(255, gray));
+              data[i] = data[i + 1] = data[i + 2] = gray;
+            }
+            ctx.putImageData(imageData, 0, 0);
+          } catch (e) {
+            console.warn('前處理略過（可能是跨網域限制）：', e);
+          }
+
+          canvas.toBlob(blob => resolve(blob || file), 'image/png');
+        };
+        img.onerror = () => resolve(file); // 前處理失敗就退回用原圖
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    // ===== 框選裁切功能 =====
+    let cropOriginalFile = null;
+    let cropImgObj = null;
+    let cropScale = 1;
+    let cropSelecting = false;
+    let cropStart = { x: 0, y: 0 };
+    let cropEnd = { x: 0, y: 0 };
+
+    function handleFileSelect(event) {
       const file = event.target.files[0];
+      if (!file) return;
+      cropOriginalFile = file;
+
+      const img = new Image();
+      img.onload = () => {
+        cropImgObj = img;
+        setupCropCanvas();
+        document.getElementById('cropModal').style.display = 'flex';
+      };
+      img.onerror = () => {
+        alert('❌ 圖片讀取失敗，請重新選擇照片。');
+      };
+      img.src = URL.createObjectURL(file);
+
+      event.target.value = ''; // 允許之後重複選同一張圖
+    }
+
+    function setupCropCanvas() {
+      const canvas = document.getElementById('cropCanvas');
+      const ctx = canvas.getContext('2d');
+
+      const maxW = window.innerWidth * 0.9;
+      const maxH = window.innerHeight * 0.65;
+      const ratio = Math.min(maxW / cropImgObj.width, maxH / cropImgObj.height, 1);
+
+      canvas.width = cropImgObj.width * ratio;
+      canvas.height = cropImgObj.height * ratio;
+      cropScale = ratio;
+
+      ctx.drawImage(cropImgObj, 0, 0, canvas.width, canvas.height);
+      cropStart = { x: 0, y: 0 };
+      cropEnd = { x: 0, y: 0 };
+
+      attachCropEvents(canvas);
+    }
+
+    function attachCropEvents(canvas) {
+      const getPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: clientX - rect.left, y: clientY - rect.top };
+      };
+
+      const start = (e) => {
+        e.preventDefault();
+        cropSelecting = true;
+        cropStart = getPos(e);
+        cropEnd = { ...cropStart };
+        redrawCropCanvas(canvas);
+      };
+      const move = (e) => {
+        if (!cropSelecting) return;
+        e.preventDefault();
+        cropEnd = getPos(e);
+        redrawCropCanvas(canvas);
+      };
+      const end = (e) => {
+        if (e) e.preventDefault();
+        cropSelecting = false;
+      };
+
+      canvas.onmousedown = start;
+      canvas.onmousemove = move;
+      canvas.onmouseup = end;
+      canvas.onmouseleave = end;
+      canvas.ontouchstart = start;
+      canvas.ontouchmove = move;
+      canvas.ontouchend = end;
+    }
+
+    function redrawCropCanvas(canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(cropImgObj, 0, 0, canvas.width, canvas.height);
+
+      const x = Math.min(cropStart.x, cropEnd.x);
+      const y = Math.min(cropStart.y, cropEnd.y);
+      const w = Math.abs(cropEnd.x - cropStart.x);
+      const h = Math.abs(cropEnd.y - cropStart.y);
+
+      ctx.strokeStyle = '#00e676';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillStyle = 'rgba(0,230,118,0.15)';
+      ctx.fillRect(x, y, w, h);
+    }
+
+    function confirmCrop() {
+      const canvas = document.getElementById('cropCanvas');
+      const x = Math.min(cropStart.x, cropEnd.x);
+      const y = Math.min(cropStart.y, cropEnd.y);
+      const w = Math.abs(cropEnd.x - cropStart.x);
+      const h = Math.abs(cropEnd.y - cropStart.y);
+
+      if (w < 10 || h < 10) {
+        alert('請先用手指拖曳框選範圍，或按「使用整張照片」略過裁切。');
+        return;
+      }
+
+      const nx = x / cropScale;
+      const ny = y / cropScale;
+      const nw = w / cropScale;
+      const nh = h / cropScale;
+
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = nw;
+      outCanvas.height = nh;
+      const outCtx = outCanvas.getContext('2d');
+      outCtx.drawImage(cropImgObj, nx, ny, nw, nh, 0, 0, nw, nh);
+
+      outCanvas.toBlob(blob => {
+        closeCropModal();
+        runOcrPipeline(blob || cropOriginalFile);
+      }, 'image/png');
+    }
+
+    function useFullImage() {
+      const file = cropOriginalFile;
+      closeCropModal();
+      runOcrPipeline(file);
+    }
+
+    function cancelCrop() {
+      closeCropModal();
+    }
+
+    function closeCropModal() {
+      document.getElementById('cropModal').style.display = 'none';
+      cropImgObj = null;
+    }
+    // ===== 框選裁切功能結束 =====
+
+    async function runOcrPipeline(file) {
       if (!file) return;
 
       const uploadBtn = document.getElementById('uploadBtn');
       const originalText = uploadBtn.innerText;
-      
-      uploadBtn.innerText = '⏳ 辨識與音標錨點鎖定中...';
+
+      uploadBtn.innerText = '⏳ 圖片前處理中...';
       uploadBtn.disabled = true;
 
       const langMap = { 'en-US': 'eng', 'zh-TW': 'chi_tra', 'ja-JP': 'jpn' };
@@ -92,24 +293,42 @@
       const ocrLang = langMap[selectedLang] || 'eng';
 
       try {
-        const result = await Tesseract.recognize(file, ocrLang);
+        const processedImage = await preprocessImage(file);
+
+        const result = await Tesseract.recognize(processedImage, ocrLang, {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              uploadBtn.innerText = `⏳ 辨識中 ${Math.round(m.progress * 100)}%`;
+            }
+          }
+        });
         let text = result.data.text;
+
+        // 無論成功與否都保留原始辨識文字，方便使用者比對、手動修正
+        document.getElementById('debugText').value = text;
+        document.getElementById('debugDetails').style.display = 'block';
+
         let extracted = [];
 
         if (ocrLang === 'eng') {
-          // 【核心修正】以 KK 音標的左中括號為錨點
-          // 尋找「英文單字 + 空白 + 左中括號/左小括號」
-          // 例如 "baby ['bebi]" 會精準抓出 "baby"
-          const regex = /\b([a-zA-Z\-]{2,})\s*[\[\(]/g;
+          // 【主要錨點】課本單字通常是「編號 + 單字 + KK音標括號」
+          // 例如 "10. man [mæn]"、"1. baby [`bebɪ]"，用編號當錨點比單純找括號準確很多
+          const numberedRegex = /\d{1,3}\s*[.\uFF0E]\s*([a-zA-Z][a-zA-Z\-]{1,20})\s*[\[\(]/g;
           let match;
-          
-          while ((match = regex.exec(text)) !== null) {
-            let w = match[1].toLowerCase();
-            extracted.push(w);
+          while ((match = numberedRegex.exec(text)) !== null) {
+            extracted.push(match[1].toLowerCase());
           }
-          
+
+          // 【備用規則】若編號規則抓不到（例如照片沒拍到編號），退回用「單字+括號」的舊規則
+          if (extracted.length === 0) {
+            const fallbackRegex = /\b([a-zA-Z\-]{2,20})\s*[\[\(]/g;
+            while ((match = fallbackRegex.exec(text)) !== null) {
+              extracted.push(match[1].toLowerCase());
+            }
+          }
+
           const stopWords = ['the','and','are','was','were','that','this','with','from','some','there','who','what','when','where','how','why','not','out','for','but'];
-          extracted = extracted.filter(w => !stopWords.includes(w));
+          extracted = extracted.filter(w => !stopWords.includes(w) && w.length >= 2);
 
         } else {
           extracted = text.split(/[\n\s,、。]+/).map(w => w.trim());
@@ -117,7 +336,7 @@
         }
 
         if (extracted.length === 0) {
-          alert('⚠️ 找不到單字！請確認照片中有拍到「單字 + [KK音標]」的格式。');
+          alert('⚠️ 找不到單字！請確認照片中有拍到「編號＋單字＋[KK音標]」的格式，並盡量拍正、避免反光模糊。下方已顯示 OCR 原始辨識文字，可參考後手動輸入單字。');
           return;
         }
 
@@ -129,17 +348,16 @@
         const pendingListDOM = document.getElementById('pendingList');
         let currentWords = pendingListDOM.value.split('\n').map(w => w.trim()).filter(w => w !== '');
         let combinedWords = [...new Set([...currentWords, ...extracted])];
-        
+
         pendingListDOM.value = combinedWords.join('\n');
-        alert(`✅ 成功鎖定並萃取 ${extracted.length} 個單字！`);
-        
+        alert(`✅ 成功鎖定並萃取 ${extracted.length} 個單字！若有辨識錯誤，可在「未考詞彙」欄位中直接手動修改。`);
+
       } catch (err) {
         console.error(err);
         alert('❌ 圖片辨識失敗，請確認網路連線是否正常。');
       } finally {
         uploadBtn.innerText = originalText;
         uploadBtn.disabled = false;
-        event.target.value = ''; 
       }
     }
 
